@@ -85,3 +85,8 @@ class AgentState(TypedDict, total=False):
         operator.add,
     ]
     final_report: Optional[AuditReport]
+    # Fatal errors per detector (e.g. clone failure, PDF missing); used for routing and aggregation
+    detector_fatal_errors: Annotated[
+        Dict[str, str],
+        operator.ior,
+    ]

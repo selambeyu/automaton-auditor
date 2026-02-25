@@ -164,16 +164,21 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         )
                     )
     except Exception as e:
+        err_msg = str(e)
         evidences.append(
             Evidence(
                 goal="RepoInvestigator",
                 found=False,
                 content=None,
                 location=repo_url,
-                rationale=str(e),
+                rationale=err_msg,
                 confidence=0.0,
             )
         )
+        return {
+            "evidences": {"repo_investigator": evidences},
+            "detector_fatal_errors": {"repo_investigator": err_msg},
+        }
 
     return {"evidences": {"repo_investigator": evidences}}
 
@@ -200,7 +205,10 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 confidence=0.0,
             )
         )
-        return {"evidences": {"doc_analyst": evidences}}
+        return {
+            "evidences": {"doc_analyst": evidences},
+            "detector_fatal_errors": {"doc_analyst": "Could not ingest PDF or file missing"},
+        }
 
     # Theoretical depth: search for key terms
     keywords = [
@@ -261,29 +269,88 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"evidences": {"doc_analyst": evidences}}
 
 
+def _get_goal(item: Any) -> str:
+    return item.get("goal", "") if isinstance(item, dict) else getattr(item, "goal", "")
+
+
+def _get_content(item: Any) -> str | None:
+    return item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+
+
+def _get_confidence(item: Any) -> float:
+    return item.get("confidence", 0.0) if isinstance(item, dict) else getattr(item, "confidence", 0.0)
+
+
 def evidence_aggregator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Fan-in: run after all detectives. Cross-reference report paths with repo
-    file list (rubric: Verified Paths vs Hallucinated Paths). Leave state ready for Judges.
+    Fan-in: run after all detectives. Reconciles and normalizes evidence across
+    detectives; cross-references report paths with repo file list (rubric:
+    Verified Paths vs Hallucinated Paths). Handles detector_fatal_errors for
+    partial runs. Leaves state ready for the judicial layer (Judges + Chief Justice).
     """
     evidences = state.get("evidences") or {}
+    detector_fatal_errors = state.get("detector_fatal_errors") or {}
     agg_evidences: List[Evidence] = []
 
-    # Report Accuracy cross-reference (rubric: Verified Paths vs Hallucinated Paths)
+    # --- 1. Collect all evidence items and normalize confidence to [0, 1] ---
+    all_items: List[Evidence] = []
+    for source, items in evidences.items():
+        for item in (items or []):
+            if isinstance(item, dict):
+                item = Evidence(**item)
+            conf = _get_confidence(item)
+            normalized_conf = max(0.0, min(1.0, float(conf)))
+            if normalized_conf != conf and isinstance(item, Evidence):
+                item = item.model_copy(update={"confidence": normalized_conf})
+            elif isinstance(item, dict):
+                item = Evidence(**(item | {"confidence": normalized_conf}))
+            all_items.append(item)
+
+    # --- 2. Reconcile by dimension/goal: one evidence per goal, merged from all detectives ---
+    by_goal: Dict[str, List[Evidence]] = {}
+    for item in all_items:
+        goal = _get_goal(item)
+        if goal not in by_goal:
+            by_goal[goal] = []
+        by_goal[goal].append(item)
+
+    for goal, items in by_goal.items():
+        if len(items) == 1:
+            agg_evidences.append(items[0])
+            continue
+        # Multiple detectives contributed to this goal: take max confidence, merge rationale
+        best = max(items, key=lambda x: _get_confidence(x))
+        rationales = [getattr(i, "rationale", i.get("rationale", "")) for i in items]
+        merged_rationale = " | ".join(rationales) if len(rationales) <= 2 else f"Reconciled from {len(items)} sources: {rationales[0][:200]}..."
+        if isinstance(best, Evidence):
+            agg_evidences.append(
+                best.model_copy(update={"rationale": merged_rationale, "location": "aggregated"})
+            )
+        else:
+            agg_evidences.append(
+                Evidence(
+                    goal=_get_goal(best),
+                    found=best.get("found", False) if isinstance(best, dict) else getattr(best, "found", False),
+                    content=_get_content(best),
+                    location="aggregated",
+                    rationale=merged_rationale,
+                    confidence=_get_confidence(best),
+                )
+            )
+
+    # --- 3. Report Accuracy cross-reference (Verified vs Hallucinated Paths) ---
     repo_list: List[str] = []
     for item in evidences.get("repo_investigator") or []:
-        goal = item.get("goal") if isinstance(item, dict) else getattr(item, "goal", "")
-        if goal == "Repo file list":
-            content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+        if _get_goal(item) == "Repo file list":
+            content = _get_content(item)
             if content:
                 repo_list = [line.strip() for line in content.splitlines() if line.strip()]
             break
 
     paths_mentioned: List[str] = []
     for item in evidences.get("doc_analyst") or []:
-        goal = item.get("goal") if isinstance(item, dict) else getattr(item, "goal", "")
-        if goal == "Report Accuracy":
-            content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+        if _get_goal(item) == "Report Accuracy":
+            content = _get_content(item)
             if content and "Paths mentioned in report:" in content:
                 block = content.split("Paths mentioned in report:")[1].split("\n\n")[0]
                 paths_mentioned = [line.strip() for line in block.splitlines() if line.strip()]
@@ -306,6 +373,20 @@ def evidence_aggregator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 location="aggregated",
                 rationale=f"Verified={len(verified)}, Hallucinated={len(hallucinated)}",
                 confidence=0.9 if len(hallucinated) == 0 else 0.3,
+            )
+        )
+
+    # --- 4. If any detector had a fatal error, add aggregated note for judicial layer ---
+    if detector_fatal_errors:
+        err_summary = "; ".join(f"{k}: {v[:100]}" for k, v in detector_fatal_errors.items())
+        agg_evidences.append(
+            Evidence(
+                goal="Aggregation (Partial Run)",
+                found=False,
+                content=err_summary,
+                location="aggregated",
+                rationale=f"Detector(s) failed; partial evidence only. {err_summary}",
+                confidence=0.0,
             )
         )
 
