@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -86,3 +87,21 @@ def query_document(
             out.append(take)
             total += len(take)
     return "\n\n---\n\n".join(out) if out else ""
+
+
+def extract_file_paths_from_chunks(chunks: List[DocChunk]) -> List[str]:
+    """
+    Extract file paths mentioned in document text (e.g. src/state.py, src/graph.py).
+    Used for Report Accuracy cross-reference with RepoInvestigator evidence.
+    """
+    paths: set[str] = set()
+    # Patterns: src/..., `src/...`, paths in backticks, "src/..."
+    pattern = re.compile(
+        r"(?:^|[\s\"'`(])(src/[a-zA-Z0-9_/.-]+\.(?:py|json|md|toml)|src/[a-zA-Z0-9_/.-]+)(?:[\s\"'`)]|$)"
+    )
+    for c in chunks:
+        for m in pattern.finditer(c.text):
+            p = m.group(1).strip("`\"'")
+            if p and 3 <= len(p) <= 120:
+                paths.add(p)
+    return sorted(paths)

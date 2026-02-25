@@ -30,14 +30,18 @@ Then run the detective graph (see below). If you run without `uv run`, set `PYTH
 
 Input: a **GitHub repository URL** and a **PDF report path** (e.g. your interim report).
 
+**Interactive (prompts for input):**
+
 ```bash
-uv run python main.py "https://github.com/owner/repo" "./reports/interim_report.pdf"
+uv run python main.py
 ```
 
-Or with `PYTHONPATH`:
+You will be asked for the repo URL and the report PDF path.
+
+**Or pass them as arguments:**
 
 ```bash
-PYTHONPATH=. python main.py "https://github.com/owner/repo" "./reports/interim_report.pdf"
+uv run python main.py "https://github.com/owner/repo" "./reports/interim_report.pdf"
 ```
 
 Optional: append `--json` to print evidences as JSON.

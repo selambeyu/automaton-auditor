@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Run the detective graph against a target repo URL and PDF report path.
-Usage: uv run python main.py <repo_url> <pdf_path>
-   or:  PYTHONPATH=. python main.py <repo_url> <pdf_path>
+Prompts for repo_url and report path if not given as arguments.
+Usage: uv run python main.py
+   or:  uv run python main.py <repo_url> <pdf_path>
 """
 
 import json
@@ -16,12 +17,19 @@ from src.graph import run_audit
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        print("Usage: python main.py <repo_url> <pdf_path>", file=sys.stderr)
-        print("Example: python main.py https://github.com/org/repo ./reports/interim_report.pdf", file=sys.stderr)
-        sys.exit(1)
-    repo_url = sys.argv[1]
-    pdf_path = sys.argv[2]
+    if len(sys.argv) >= 3:
+        repo_url = sys.argv[1].strip()
+        pdf_path = sys.argv[2].strip()
+    else:
+        print("Enter the GitHub repository URL and path to the PDF report.\n")
+        repo_url = input("Repo URL (e.g. https://github.com/owner/repo): ").strip()
+        if not repo_url:
+            print("Error: Repo URL is required.", file=sys.stderr)
+            sys.exit(1)
+        pdf_path = input("Report PDF path (e.g. ./reports/report.pdf): ").strip()
+        if not pdf_path:
+            print("Error: Report path is required.", file=sys.stderr)
+            sys.exit(1)
     if not Path(pdf_path).exists():
         print(f"Warning: PDF path does not exist: {pdf_path}", file=sys.stderr)
     print("Running detective graph (RepoInvestigator + DocAnalyst in parallel)...")

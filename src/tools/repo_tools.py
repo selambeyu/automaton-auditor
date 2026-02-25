@@ -56,9 +56,6 @@ def clone_repo_sandboxed(repo_url: str) -> Generator[Path, None, None]:
             text=True,
             timeout=120,
         )
-        print("git clone result", result.returncode)
-        print(result.stdout)
-        print(result.stderr)
         if result.returncode != 0:
             err = result.stderr or result.stdout or "Unknown error"
             if "Authentication failed" in err or "Permission denied" in err:
@@ -66,6 +63,80 @@ def clone_repo_sandboxed(repo_url: str) -> Generator[Path, None, None]:
             raise RuntimeError(f"git clone failed: {err}")
         subdirs = [d for d in dest.iterdir() if d.is_dir() and not d.name.startswith(".")]
         yield subdirs[0] if len(subdirs) == 1 else dest
+
+
+@dataclass
+class StateStructure:
+    """Result of AST analysis of state definitions (state.py or in graph.py)."""
+
+    has_base_model: bool = False
+    has_typed_dict: bool = False
+    has_evidence_class: bool = False
+    has_judicial_opinion_class: bool = False
+    has_operator_add: bool = False
+    has_operator_ior: bool = False
+    snippet: Optional[str] = None
+
+
+def _analyze_state_ast(tree: ast.AST, source: str) -> StateStructure:
+    """Walk AST to find BaseModel, TypedDict, Evidence, JudicialOpinion, operator.add, operator.ior."""
+    out = StateStructure()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            if node.name == "Evidence":
+                out.has_evidence_class = True
+            if node.name == "JudicialOpinion":
+                out.has_judicial_opinion_class = True
+            for base in node.bases:
+                name = None
+                if isinstance(base, ast.Name):
+                    name = base.id
+                elif isinstance(base, ast.Attribute):
+                    name = base.attr
+                if name == "BaseModel":
+                    out.has_base_model = True
+                if name == "TypedDict":
+                    out.has_typed_dict = True
+    if "operator.ior" in source:
+        out.has_operator_ior = True
+    if "operator.add" in source:
+        out.has_operator_add = True
+    return out
+
+
+def analyze_state_structure(repo_path: str | Path) -> StateStructure:
+    """
+    Use AST on src/state.py (or state in src/graph.py) to find BaseModel, TypedDict,
+    Evidence, JudicialOpinion, and operator.add / operator.ior reducers.
+    """
+    path = Path(repo_path)
+    state_file = path / "src" / "state.py"
+    if not state_file.exists():
+        return StateStructure()
+    try:
+        source = state_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return StateStructure()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return StateStructure()
+    out = _analyze_state_ast(tree, source)
+    out.snippet = source[:2000] if len(source) > 2000 else source
+    return out
+
+
+def list_src_files(repo_path: str | Path) -> List[str]:
+    """Return relative paths of all files under src/ for cross-reference with report."""
+    path = Path(repo_path)
+    src_dir = path / "src"
+    if not src_dir.is_dir():
+        return []
+    out: List[str] = []
+    for f in src_dir.rglob("*"):
+        if f.is_file():
+            out.append(str(f.relative_to(path)))
+    return sorted(out)
 
 
 def extract_git_history(repo_path: str | Path) -> List[CommitInfo]:
