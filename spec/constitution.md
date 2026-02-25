@@ -21,8 +21,3 @@ These principles govern all implementation decisions for the Week 2 Automaton Au
 
 - **AST for code structure.** Graph structure, state definitions, and tool usage are inferred via Python’s `ast` module (or equivalent parsing). Regex alone is not used to determine StateGraph topology, Pydantic usage, or reducer presence.
 - **Rubric as config.** The machine-readable rubric (`rubric.json`) is loaded at runtime. Detectives and Judges receive instructions filtered by `target_artifact` and use `forensic_instruction` / synthesis rules from the rubric.
-
-## 5. Interim scope (Wednesday)
-
-- **Detective layer + partial graph only.** Implement RepoInvestigator and DocAnalyst; wire them in parallel with an EvidenceAggregator (fan-out/fan-in). Judges and Chief Justice are out of scope for the interim submission.
-- **Deliverables match the checklist.** File paths and deliverables follow the Wednesday submission requirements exactly (`src/state.py`, `src/tools/repo_tools.py`, etc.).
