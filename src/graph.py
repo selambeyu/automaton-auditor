@@ -1,9 +1,5 @@
-"""Partial StateGraph: detectives in parallel (fan-out) and EvidenceAggregator (fan-in).
-
-Conditional routing: skip RepoInvestigator when repo_url is missing; skip DocAnalyst
-when pdf_path is missing. Fatal errors during detective runs are recorded in
-detector_fatal_errors and handled by the aggregator. After aggregation, a
-judicial layer placeholder runs before END (Judges + Chief Justice will attach here).
+"""StateGraph: detectives in parallel (fan-out), EvidenceAggregator (fan-in),
+then Judges in parallel (fan-out), Chief Justice (fan-in), END.
 """
 
 from __future__ import annotations
@@ -12,6 +8,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Literal
 
+# Load .env before any LangChain/LangGraph import so LANGCHAIN_TRACING_V2 and LANGCHAIN_API_KEY are set
+# (LangSmith requires these to be in os.environ before the first langchain import)
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from langgraph.graph import END, StateGraph
 
 from src.state import AgentState
@@ -19,23 +21,40 @@ from src.nodes.detectives import (
     doc_analyst_node,
     evidence_aggregator_node,
     repo_investigator_node,
+    vision_inspector_node,
 )
+from src.nodes.judges import defense_node, prosecutor_node, tech_lead_node
+from src.nodes.justice import chief_justice_node
 
 
 def _load_rubric(rubric_path: str | Path | None = None) -> list:
+    """Load rubric dimensions only (backward compatible)."""
+    full = _load_rubric_full(rubric_path)
+    return full.get("dimensions", [])
+
+
+def _load_rubric_full(rubric_path: str | Path | None = None) -> Dict[str, Any]:
+    """Load full rubric (dimensions + synthesis_rules) from path. Dynamic: change path to use a different rubric."""
     path = Path(rubric_path or __file__).resolve().parent.parent / "rubric.json"
     if not path.exists():
-        return []
+        return {"dimensions": [], "synthesis_rules": {}}
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return data.get("dimensions", [])
+    return {
+        "dimensions": data.get("dimensions", []),
+        "synthesis_rules": data.get("synthesis_rules", {}),
+    }
 
 
 def _entry_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure rubric_dimensions are set from rubric.json if not provided."""
+    """Ensure rubric_dimensions (and synthesis_rules) are set from default rubric.json if not provided."""
     if state.get("rubric_dimensions"):
         return {}
-    return {"rubric_dimensions": _load_rubric()}
+    full = _load_rubric_full(None)
+    return {
+        "rubric_dimensions": full["dimensions"],
+        "rubric_synthesis_rules": full["synthesis_rules"],
+    }
 
 
 def _route_repo(state: Dict[str, Any]) -> Literal["run", "skip"]:
@@ -66,73 +85,109 @@ def _skip_doc_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _judicial_placeholder_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Placeholder for the judicial layer. Runs after EvidenceAggregator; state is ready
-    for Judges (Prosecutor, Defense, TechLead) and Chief Justice synthesis.
-    No-op for interim: optional placeholder message in state for documentation.
-    """
-    # Leave state unchanged; judicial layer will consume state["evidences"] and write opinions + final_report
-    return {}
+def _route_vision(state: Dict[str, Any]) -> Literal["run", "skip"]:
+    """Route to VisionInspector only when pdf_path is present (same as DocAnalyst)."""
+    pdf_path = (state.get("pdf_path") or "").strip()
+    return "run" if pdf_path else "skip"
+
+
+def _skip_vision_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Short-circuit: no pdf_path; empty evidence for vision branch."""
+    return {
+        "evidences": {"vision_inspector": []},
+        "detector_fatal_errors": {"vision_inspector": "pdf_path missing or empty; skipping VisionInspector."},
+    }
 
 
 def build_detective_graph():
     """
-    Build the partial graph with conditional routing and judicial placeholder:
+    Build the full graph: detectives (fan-out/fan-in) -> judges (fan-out/fan-in) -> chief_justice -> END.
 
-    - Entry -> [repo_gate, doc_gate] (fan-out)
-    - repo_gate: conditional -> RepoInvestigator (if repo_url) else skip_repo
-    - doc_gate: conditional -> DocAnalyst (if pdf_path) else skip_doc
-    - All four branches -> EvidenceAggregator (fan-in)
-    - EvidenceAggregator -> judicial_placeholder -> END
+    - Entry -> [repo_gate, doc_gate, vision_gate] (fan-out)
+    - repo_gate: conditional -> RepoInvestigator or skip_repo
+    - doc_gate: conditional -> DocAnalyst or skip_doc
+    - vision_gate: conditional -> VisionInspector or skip_vision
+    - All branches -> EvidenceAggregator (fan-in)
+    - EvidenceAggregator -> [prosecutor, defense, tech_lead] (fan-out)
+    - prosecutor, defense, tech_lead -> chief_justice (fan-in)
+    - chief_justice -> END
     """
     builder = StateGraph(AgentState)
 
     builder.add_node("entry", _entry_node)
-    builder.add_node("repo_gate", lambda s: {})  # pass-through for routing only
+    builder.add_node("repo_gate", lambda s: {})
     builder.add_node("doc_gate", lambda s: {})
+    builder.add_node("vision_gate", lambda s: {})
     builder.add_node("skip_repo", _skip_repo_node)
     builder.add_node("skip_doc", _skip_doc_node)
+    builder.add_node("skip_vision", _skip_vision_node)
     builder.add_node("repo_investigator", repo_investigator_node)
     builder.add_node("doc_analyst", doc_analyst_node)
+    builder.add_node("vision_inspector", vision_inspector_node)
     builder.add_node("evidence_aggregator", evidence_aggregator_node)
-    builder.add_node("judicial_placeholder", _judicial_placeholder_node)
+    builder.add_node("prosecutor", prosecutor_node)
+    builder.add_node("defense", defense_node)
+    builder.add_node("tech_lead", tech_lead_node)
+    builder.add_node("chief_justice", chief_justice_node)
 
     builder.set_entry_point("entry")
 
-    # Fan-out: entry -> both gates
     builder.add_edge("entry", "repo_gate")
     builder.add_edge("entry", "doc_gate")
+    builder.add_edge("entry", "vision_gate")
 
-    # Conditional edges: skip detectives when input is missing (short-circuit on fatal config)
     builder.add_conditional_edges("repo_gate", _route_repo, {"run": "repo_investigator", "skip": "skip_repo"})
     builder.add_conditional_edges("doc_gate", _route_doc, {"run": "doc_analyst", "skip": "skip_doc"})
+    builder.add_conditional_edges("vision_gate", _route_vision, {"run": "vision_inspector", "skip": "skip_vision"})
 
-    # Fan-in: all branches -> aggregator
     builder.add_edge("repo_investigator", "evidence_aggregator")
     builder.add_edge("skip_repo", "evidence_aggregator")
     builder.add_edge("doc_analyst", "evidence_aggregator")
     builder.add_edge("skip_doc", "evidence_aggregator")
+    builder.add_edge("vision_inspector", "evidence_aggregator")
+    builder.add_edge("skip_vision", "evidence_aggregator")
 
-    # After aggregation: judicial layer placeholder, then END
-    builder.add_edge("evidence_aggregator", "judicial_placeholder")
-    builder.add_edge("judicial_placeholder", END)
+    # Fan-out: aggregator -> all three judges
+    builder.add_edge("evidence_aggregator", "prosecutor")
+    builder.add_edge("evidence_aggregator", "defense")
+    builder.add_edge("evidence_aggregator", "tech_lead")
+
+    # Fan-in: all judges -> chief_justice -> END
+    builder.add_edge("prosecutor", "chief_justice")
+    builder.add_edge("defense", "chief_justice")
+    builder.add_edge("tech_lead", "chief_justice")
+    builder.add_edge("chief_justice", END)
 
     return builder.compile()
 
 
-def run_audit(repo_url: str, pdf_path: str, rubric_path: str | None = None) -> Dict[str, Any]:
+def run_audit(
+    repo_url: str,
+    pdf_path: str,
+    rubric_path: str | None = None,
+    run_id: str | None = None,
+) -> Dict[str, Any]:
     """
     Run the detective graph and return final state. Optional rubric_path.
+    If run_id is provided (or generated), it is used for LangSmith tracing so you can
+    link to the trace. The run_id is attached to the result as _run_id.
     """
+    import uuid
+
     graph = build_detective_graph()
+    full_rubric = _load_rubric_full(rubric_path)
     initial: Dict[str, Any] = {
         "repo_url": repo_url,
         "pdf_path": pdf_path,
-        "rubric_dimensions": _load_rubric(rubric_path),
+        "rubric_dimensions": full_rubric["dimensions"],
+        "rubric_synthesis_rules": full_rubric["synthesis_rules"],
         "evidences": {},
         "opinions": [],
         "detector_fatal_errors": {},
     }
-    result = graph.invoke(initial)
+
+    rid = run_id or str(uuid.uuid4())
+    config: Dict[str, Any] = {"run_id": rid}
+    result = graph.invoke(initial, config=config)
+    result["_run_id"] = rid
     return result
