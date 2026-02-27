@@ -89,6 +89,41 @@ def query_document(
     return "\n\n---\n\n".join(out) if out else ""
 
 
+def extract_images_from_pdf(path: str | Path) -> List[dict]:
+    """
+    Extract images from the PDF for vision analysis (e.g. diagram inspection).
+    Returns list of dicts: {"bytes": bytes, "format": str, "page": int}.
+    Uses PyMuPDF. Used by VisionInspector; execution optional.
+    """
+    path = Path(path)
+    if not path.exists() or path.suffix.lower() != ".pdf":
+        return []
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return []
+    out: List[dict] = []
+    try:
+        doc = fitz.open(path)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            for img in page.get_images():
+                xref = img[0]
+                try:
+                    base = doc.extract_image(xref)
+                    out.append({
+                        "bytes": base.get("image"),
+                        "format": base.get("ext", "png"),
+                        "page": page_num + 1,
+                    })
+                except Exception:
+                    continue
+        doc.close()
+    except Exception:
+        pass
+    return out
+
+
 def extract_file_paths_from_chunks(chunks: List[DocChunk]) -> List[str]:
     """
     Extract file paths mentioned in document text (e.g. src/state.py, src/graph.py).

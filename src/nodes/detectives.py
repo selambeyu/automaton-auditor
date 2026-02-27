@@ -1,12 +1,20 @@
-"""Detective layer: RepoInvestigator and DocAnalyst nodes. Output structured Evidence only."""
+"""Detective layer: RepoInvestigator, DocAnalyst, and VisionInspector nodes. Output structured Evidence only.
+
+Optional LLM use (fact extraction only, no opinions): set AUDITOR_DETECTIVE_LLM=1 to use
+get_detective_llm() (or get_llm()) in DocAnalyst for classifying theoretical depth.
+VisionInspector uses get_detective_llm() when DETECTIVE_PROVIDER=gemini, else get_vision_llm().
+"""
 
 from __future__ import annotations
 
+import base64
+import os
 from typing import Any, Dict, List
 
 from src.state import Evidence
 from src.tools.doc_tools import (
     extract_file_paths_from_chunks,
+    extract_images_from_pdf,
     ingest_pdf,
     query_document,
 )
@@ -163,6 +171,23 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                             confidence=0.0,
                         )
                     )
+
+            # Dynamic rubric: for any repo dimension we don't have specific logic for, add one generic evidence
+            # so judges and Chief Justice can still score it when you add new dimensions to rubric.json
+            goals_done = {e.goal for e in evidences}
+            for dim in repo_dims:
+                name = dim.get("name") or dim.get("id") or ""
+                if name and name not in goals_done:
+                    evidences.append(
+                        Evidence(
+                            goal=name,
+                            found=False,
+                            content=f"Repo cloned; no specific collector for dimension '{name}'. forensic_instruction: {dim.get('forensic_instruction', '')[:200]}...",
+                            location=str(path),
+                            rationale="Generic fallback for rubric dimension without dedicated collector.",
+                            confidence=0.3,
+                        )
+                    )
     except Exception as e:
         err_msg = str(e)
         evidences.append(
@@ -181,6 +206,39 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     return {"evidences": {"repo_investigator": evidences}}
+
+
+def _llm_classify_theoretical_depth(snippet: str, max_chars: int = 2500) -> str | None:
+    """
+    Use the shared LLM for fact-only classification: does the report text contain
+    substantive explanation of orchestration concepts or only keyword mention?
+    Returns a short factual summary string, or None on error. No opinions or scoring.
+    """
+    if not (snippet and snippet.strip()):
+        return None
+    text = snippet[:max_chars] if len(snippet) > max_chars else snippet
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from src.llm import get_detective_llm
+
+        llm = get_detective_llm()
+        system = (
+            "You are a forensic document analyst. You only extract facts. Do not give opinions or scores. "
+            "Classify whether the given report excerpt contains: (1) SUBSTANTIVE_EXPLANATION — the text explains "
+            "how concepts like Dialectical Synthesis, Fan-In/Fan-Out, or Metacognition are implemented or used; "
+            "or (2) KEYWORD_ONLY — the terms appear but without real explanation. "
+            "Reply with exactly one line: SUBSTANTIVE_EXPLANATION or KEYWORD_ONLY, then a space, then a short "
+            "quote from the text (max 200 chars) that supports your classification. No other commentary."
+        )
+        msg = HumanMessage(
+            content=f"Report excerpt:\n\n{text}\n\nClassify (one line: SUBSTANTIVE_EXPLANATION or KEYWORD_ONLY + short quote):"
+        )
+        response = llm.invoke([SystemMessage(content=system), msg])
+        out = response.content if hasattr(response, "content") else str(response)
+        return (out or "").strip() or None
+    except Exception:
+        return None
 
 
 def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,14 +286,26 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
     dim = next((d for d in pdf_dims if d.get("id") == "theoretical_depth"), None)
     if dim:
         found = bool(snippet)
+        rationale = "Searched for orchestration and metacognition terms in report."
+        content = snippet or None
+        confidence = 0.7 if found else 0.2
+        # Optional: use LLM for factual classification (substantive vs keyword-only)
+        if os.environ.get("AUDITOR_DETECTIVE_LLM", "").strip().lower() in ("1", "true", "yes") and snippet:
+            llm_class = _llm_classify_theoretical_depth(snippet)
+            if llm_class:
+                rationale = f"{rationale} LLM classification: {llm_class}"
+                if "SUBSTANTIVE" in llm_class.upper():
+                    confidence = 0.85
+                elif "KEYWORD_ONLY" in llm_class.upper():
+                    confidence = 0.4
         evidences.append(
             Evidence(
                 goal=dim.get("name", "Theoretical Depth"),
                 found=found,
-                content=snippet or None,
+                content=content,
                 location=pdf_path,
-                rationale="Searched for orchestration and metacognition terms in report.",
-                confidence=0.7 if found else 0.2,
+                rationale=rationale,
+                confidence=confidence,
             )
         )
 
@@ -255,6 +325,22 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
 
+    # Dynamic rubric: for any pdf_report dimension we don't have specific logic for, add one generic evidence
+    goals_done = {e.goal for e in evidences}
+    for dim in pdf_dims:
+        name = dim.get("name") or dim.get("id") or ""
+        if name and name not in goals_done:
+            evidences.append(
+                Evidence(
+                    goal=name,
+                    found=bool(snippet),
+                    content=(snippet[:1500] if snippet else None) or f"PDF ingested. forensic_instruction: {dim.get('forensic_instruction', '')[:200]}...",
+                    location=pdf_path,
+                    rationale="Generic fallback for rubric dimension without dedicated collector.",
+                    confidence=0.4,
+                )
+            )
+
     if not evidences:
         evidences.append(
             Evidence(
@@ -267,6 +353,164 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
     return {"evidences": {"doc_analyst": evidences}}
+
+
+def vision_inspector_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Diagram Detective: extract images from the PDF and optionally run vision model
+    for "Architectural Diagram Analysis" (rubric: swarm_visual). Execution optional:
+    set AUDITOR_RUN_VISION=1 to run; otherwise returns Evidence with found=False.
+    """
+    pdf_path = (state.get("pdf_path") or "").strip()
+    rubric_dimensions: List[Dict[str, Any]] = state.get("rubric_dimensions") or []
+    dim = next(
+        (d for d in rubric_dimensions if d.get("target_artifact") == "pdf_images"),
+        None,
+    )
+    goal_name = dim.get("name", "Architectural Diagram Analysis") if dim else "Architectural Diagram Analysis"
+    evidences: List[Evidence] = []
+
+    if not pdf_path:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location="",
+                rationale="pdf_path missing; VisionInspector skipped.",
+                confidence=0.0,
+            )
+        )
+        return {"evidences": {"vision_inspector": evidences}}
+
+    images = extract_images_from_pdf(pdf_path)
+    run_vision = os.environ.get("AUDITOR_RUN_VISION", "0").strip().lower() in ("1", "true", "yes")
+
+    if not images or not run_vision:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location=pdf_path,
+                rationale="Vision inspection skipped (AUDITOR_RUN_VISION not set) or no images extracted from PDF."
+                if not run_vision
+                else "No images extracted from PDF.",
+                confidence=0.0,
+            )
+        )
+        return {"evidences": {"vision_inspector": evidences}}
+
+    # Call vision-capable model: multi-model stack uses get_detective_llm() (Gemini), else get_vision_llm()
+    try:
+        from langchain_core.messages import HumanMessage
+
+        from src.llm import get_detective_llm, get_detective_provider, get_vision_llm, get_vision_provider
+    except ImportError:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location=pdf_path,
+                rationale="Vision model not available (import error).",
+                confidence=0.0,
+            )
+        )
+        return {"evidences": {"vision_inspector": evidences}}
+
+    if get_detective_provider() == "gemini":
+        llm = get_detective_llm()
+    else:
+        llm = get_vision_llm()
+    if llm is None:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location=pdf_path,
+                rationale="Vision model not configured (set API key or OLLAMA_VISION_MODEL).",
+                confidence=0.0,
+            )
+        )
+        return {"evidences": {"vision_inspector": evidences}}
+
+    prompt = (
+        "Classify this diagram: Is it an accurate LangGraph State Machine diagram, a sequence diagram, or generic flowchart? "
+        "Does it show parallel split: Detectives in parallel -> Evidence Aggregation -> Judges in parallel -> Chief Justice? "
+        "Reply in one short paragraph: type (StateGraph / sequence / generic), then whether parallel flow is shown (yes/no)."
+    )
+    img = images[0]
+    img_bytes = img.get("bytes") or b""
+    fmt = (img.get("format") or "png").lower()
+    mime = "image/png" if fmt == "png" else "image/jpeg" if fmt in ("jpg", "jpeg") else "image/png"
+    b64 = base64.b64encode(img_bytes).decode("utf-8") if img_bytes else ""
+
+    if not b64:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location=pdf_path,
+                rationale="Image bytes empty.",
+                confidence=0.0,
+            )
+        )
+        return {"evidences": {"vision_inspector": evidences}}
+
+    # Gemini expects {"type": "image", "base64", "mime_type"}; others use image_url with data URL
+    vision_provider = get_detective_provider() or get_vision_provider()
+    if vision_provider == "gemini":
+        image_part = {"type": "image", "base64": b64, "mime_type": mime}
+    else:
+        image_part = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+    try:
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                image_part,
+            ],
+        )
+        response = llm.invoke([msg])
+        # Gemini can return content as list of blocks; prefer .text when available
+        content = getattr(response, "text", None) or response.content
+        if isinstance(content, list):
+            parts = (b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+            content = (" ".join(parts).strip()) or str(response)
+        else:
+            content = content or str(response)
+        # Heuristic: if response suggests StateGraph and parallel, found=True
+        content_lower = (content or "").lower()
+        found = (
+            ("stategraph" in content_lower or "parallel" in content_lower)
+            and ("generic" not in content_lower or "parallel" in content_lower)
+        )
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=found,
+                content=content[:2000] if content else None,
+                location=pdf_path,
+                rationale="Vision model classified diagram.",
+                confidence=0.7 if found else 0.3,
+            )
+        )
+    except Exception as e:
+        evidences.append(
+            Evidence(
+                goal=goal_name,
+                found=False,
+                content=None,
+                location=pdf_path,
+                rationale=f"Vision model error: {e!s}"[:200],
+                confidence=0.0,
+            )
+        )
+
+    return {"evidences": {"vision_inspector": evidences}}
 
 
 def _get_goal(item: Any) -> str:
