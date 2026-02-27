@@ -76,6 +76,7 @@ class AgentState(TypedDict, total=False):
     repo_url: str
     pdf_path: str
     rubric_dimensions: List[Dict[str, Any]]
+    rubric_synthesis_rules: Dict[str, str]  # from rubric.json synthesis_rules; used by Chief Justice
     evidences: Annotated[
         Dict[str, List[Evidence]],
         operator.ior,
@@ -85,6 +86,7 @@ class AgentState(TypedDict, total=False):
         operator.add,
     ]
     final_report: Optional[AuditReport]
+    report_path: str  # path to the written Markdown report (e.g. audit/report_<timestamp>.md)
     # Fatal errors per detector (e.g. clone failure, PDF missing); used for routing and aggregation
     detector_fatal_errors: Annotated[
         Dict[str, str],
