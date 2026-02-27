@@ -30,3 +30,6 @@ Thumbs.db
 
 # LangSmith / tracing (optional local config)
 .langsmith
+
+# Web uploads (temporary PDFs)
+uploads/

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Automaton Auditor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #18181c;
+      --border: #2a2a30;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #a78bfa;
+      --accent-dim: #7c3aed;
+      --success: #34d399;
+      --error: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.25rem;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    input[type="url"],
+    input[type="text"] {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      font: inherit;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.9rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2);
+    }
+    input[type="file"] {
+      width: 100%;
+      padding: 0.75rem;
+      font-size: 0.875rem;
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    input[type="file"]:hover { border-color: var(--accent); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      font: inherit;
+      font-weight: 600;
+      font-size: 0.95rem;
+      background: var(--accent);
+      color: #0f0f12;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn:hover { background: #c4b5fd; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .result {
+      margin-top: 1.5rem;
+      padding: 1.25rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .result.success { background: rgba(52, 211, 153, 0.08); border-color: rgba(52, 211, 153, 0.3); }
+    .result.error { background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); }
+    .result h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    .result.success h3 { color: var(--success); }
+    .result.error h3 { color: var(--error); }
+    .score {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0.5rem 0;
+    }
+    .summary { color: var(--muted); font-size: 0.9rem; white-space: pre-wrap; }
+    .links { margin-top: 1rem; }
+    .links a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .links a:hover { text-decoration: underline; }
+    #spinner {
+      display: none;
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #0f0f12;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Automaton Auditor</h1>
+    <p class="sub">Run the full audit: detectives → judges → Chief Justice. Submit a repo URL and your report PDF.</p>
+
+    <form id="audit-form" class="card">
+      <div style="margin-bottom: 1.25rem;">
+        <label for="repo_url">GitHub repository URL</label>
+        <input type="url" id="repo_url" name="repo_url" placeholder="https://github.com/owner/repo" required />
+      </div>
+      <div style="margin-bottom: 1.25rem;">
+        <label for="pdf">Report PDF</label>
+        <input type="file" id="pdf" name="pdf" accept=".pdf" required />
+      </div>
+      <button type="submit" class="btn" id="submit-btn">
+        <span id="spinner"></span>
+        <span id="btn-text">Run audit</span>
+      </button>
+    </form>
+
+    <div id="out"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById("audit-form");
+    const out = document.getElementById("out");
+    const submitBtn = document.getElementById("submit-btn");
+    const btnText = document.getElementById("btn-text");
+    const spinner = document.getElementById("spinner");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const repoUrl = document.getElementById("repo_url").value.trim();
+      const fileInput = document.getElementById("pdf");
+      if (!fileInput.files.length) {
+        showResult(false, "Please select a PDF file.");
+        return;
+      }
+      const file = fileInput.files[0];
+      if (!file.name.toLowerCase().endsWith(".pdf")) {
+        showResult(false, "File must be a PDF.");
+        return;
+      }
+
+      submitBtn.disabled = true;
+      btnText.textContent = "Running audit…";
+      spinner.style.display = "inline-block";
+      out.innerHTML = "";
+
+      const formData = new FormData();
+      formData.set("repo_url", repoUrl);
+      formData.append("pdf", file);
+
+      try {
+        const res = await fetch("/api/audit", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          showResult(false, data.error || res.statusText || "Request failed.");
+          return;
+        }
+        if (!data.ok) {
+          showResult(false, data.error || "Audit failed.");
+          return;
+        }
+
+        let html = '<div class="result success">';
+        html += '<h3>Audit complete</h3>';
+        if (data.overall_score != null) {
+          html += '<p class="score">Overall score: ' + escapeHtml(String(data.overall_score)) + ' / 5</p>';
+        }
+        if (data.executive_summary) {
+          html += '<p class="summary">' + escapeHtml(data.executive_summary) + '</p>';
+        }
+        html += '<div class="links">';
+        if (data.report_url) {
+          html += '<a href="' + escapeHtml(data.report_url) + '" target="_blank" rel="noopener">View report (Markdown)</a>';
+        }
+        if (data.report_path) {
+          html += ' <span style="color: var(--muted);"> · saved to ' + escapeHtml(data.report_path) + '</span>';
+        }
+        if (data.trace_url) {
+          html += '<br/><a href="' + escapeHtml(data.trace_url) + '" target="_blank" rel="noopener">Open LangSmith trace</a>';
+        } else if (data.run_id) {
+          html += '<br/><span style="color: var(--muted);">LangSmith run_id: ' + escapeHtml(String(data.run_id)) + '</span>';
+        }
+        html += '</div></div>';
+        out.innerHTML = html;
+      } catch (err) {
+        showResult(false, err.message || "Network error.");
+      } finally {
+        submitBtn.disabled = false;
+        btnText.textContent = "Run audit";
+        spinner.style.display = "none";
+      }
+    });
+
+    function showResult(ok, message) {
+      out.innerHTML = '<div class="result ' + (ok ? 'success' : 'error') + '">' +
+        '<h3>' + (ok ? 'Success' : 'Error') + '</h3>' +
+        '<p class="summary">' + escapeHtml(message) + '</p></div>';
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
