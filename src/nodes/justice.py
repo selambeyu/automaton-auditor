@@ -168,6 +168,10 @@ def _report_to_markdown(report: AuditReport) -> str:
         lines.append("")
         for o in c.judge_opinions:
             lines.append(f"  - **{o.judge}** (score {o.score}): {o.argument[:200]}...")
+            cited = o.cited_evidence or []
+            if cited:
+                for cite in cited:
+                    lines.append(f"    - *Cited:* {cite}")
         lines.append("")
     lines.append("## Remediation Plan")
     lines.append("")

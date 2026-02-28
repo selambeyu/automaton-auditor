@@ -196,6 +196,65 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         )
                     )
 
+            # Chief Justice synthesis engine: check deterministic rules + Markdown report output
+            cj_file = path / "src" / "nodes" / "justice.py"
+            dim = next((d for d in repo_dims if d.get("id") == "chief_justice_synthesis"), None)
+            if dim:
+                if cj_file.exists():
+                    cj = cj_file.read_text(encoding="utf-8", errors="replace")
+                    has_deterministic = "def _resolve_score" in cj and ("if " in cj or "elif " in cj)
+                    has_security_rule = "Rule of Security" in cj or "security" in cj.lower()
+                    has_evidence_rule = "Rule of Evidence" in cj or "fact supremacy" in cj.lower() or "_get_evidence_for_criterion" in cj
+                    has_functionality_rule = "Rule of Functionality" in cj or ("criterion_id == \"graph_orchestration\"" in cj)
+                    has_variance = "variance > 2" in cj or "score variance" in cj.lower() or "variance" in cj.lower()
+                    writes_markdown = "_report_to_markdown" in cj and "_write_report_markdown" in cj and "write_text" in cj
+
+                    found = bool(
+                        has_deterministic
+                        and has_security_rule
+                        and has_evidence_rule
+                        and has_functionality_rule
+                        and has_variance
+                        and writes_markdown
+                    )
+                    fi = (dim.get("forensic_instruction") or "")[:280]
+                    rationale = (
+                        "justice.py checks: "
+                        f"deterministic_rules={has_deterministic}, "
+                        f"security_rule={has_security_rule}, "
+                        f"evidence_rule={has_evidence_rule}, "
+                        f"functionality_rule={has_functionality_rule}, "
+                        f"variance_dissent={has_variance}, "
+                        f"markdown_output={writes_markdown}"
+                    )
+                    if fi:
+                        rationale = f"Forensic instruction: {fi}... {rationale}"
+                    evidences.append(
+                        Evidence(
+                            goal=dim.get("name", "Chief Justice Synthesis Engine"),
+                            found=found,
+                            content=cj[:2000],
+                            location="src/nodes/justice.py",
+                            rationale=rationale,
+                            confidence=0.9 if found else 0.35,
+                        )
+                    )
+                else:
+                    fi = (dim.get("forensic_instruction") or "")[:200]
+                    rationale = "File not present (Chief Justice node missing)."
+                    if fi:
+                        rationale = f"Forensic instruction: {fi}... {rationale}"
+                    evidences.append(
+                        Evidence(
+                            goal=dim.get("name", "Chief Justice Synthesis Engine"),
+                            found=False,
+                            content=None,
+                            location="src/nodes/justice.py",
+                            rationale=rationale,
+                            confidence=0.0,
+                        )
+                    )
+
             # Dynamic rubric: for any repo dimension we don't have specific logic for, add one generic evidence
             # so judges and Chief Justice can still score it when you add new dimensions to rubric.json
             goals_done = {e.goal for e in evidences}
