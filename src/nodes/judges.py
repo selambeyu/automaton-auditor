@@ -80,11 +80,23 @@ Your job is to evaluate architectural soundness, code cleanliness, and practical
 - Output ONLY a valid JudicialOpinion: judge="TechLead", criterion_id, score (1-5), argument, cited_evidence (list of short strings)."""
 
 
+def _format_judicial_logic(synthesis_rules: Dict[str, Any]) -> str:
+    """Format rubric synthesis_rules as judicial_logic for judge system prompts (facts over opinions)."""
+    if not synthesis_rules:
+        return ""
+    lines = ["Court rules (Chief Justice will apply these; weigh facts over opinions):"]
+    for key, value in (synthesis_rules or {}).items():
+        if isinstance(value, str) and value.strip():
+            lines.append(f"- {key}: {value.strip()}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def _opinion_for_dimension(
     judge_name: Literal["Prosecutor", "Defense", "TechLead"],
     dimension: Dict[str, Any],
     evidence_context: str,
     system_prompt: str,
+    judicial_logic: str = "",
     max_retries: int = 2,
 ) -> JudicialOpinion:
     """Call LLM once for this dimension; return JudicialOpinion. Retry on parse failure."""
@@ -92,6 +104,10 @@ def _opinion_for_dimension(
     dim_name = dimension.get("name", "Unknown")
     success = dimension.get("success_pattern", "")
     failure = dimension.get("failure_pattern", "")
+
+    full_system = system_prompt
+    if judicial_logic:
+        full_system = f"{system_prompt}\n\n{judicial_logic}"
 
     user_content = (
         f"Criterion: {dim_name} (id={dim_id})\n"
@@ -111,7 +127,7 @@ def _opinion_for_dimension(
         try:
             opinion = llm.invoke(
                 [
-                    SystemMessage(content=system_prompt),
+                    SystemMessage(content=full_system),
                     HumanMessage(content=user_content),
                 ]
             )
@@ -141,6 +157,7 @@ def _opinion_for_dimension(
 def prosecutor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Prosecutor: one JudicialOpinion per rubric dimension. Returns {"opinions": [...]}."""
     dimensions: List[Dict[str, Any]] = state.get("rubric_dimensions") or []
+    judicial_logic = _format_judicial_logic(state.get("rubric_synthesis_rules") or {})
     opinions: List[JudicialOpinion] = []
     for dim in dimensions:
         evidence_list = _collect_evidence_for_dimension(state, dim)
@@ -150,6 +167,7 @@ def prosecutor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             dim,
             context,
             PROSECUTOR_SYSTEM,
+            judicial_logic=judicial_logic,
         )
         opinions.append(opinion)
     return {"opinions": opinions}
@@ -158,6 +176,7 @@ def prosecutor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 def defense_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Defense: one JudicialOpinion per rubric dimension. Returns {"opinions": [...]}."""
     dimensions: List[Dict[str, Any]] = state.get("rubric_dimensions") or []
+    judicial_logic = _format_judicial_logic(state.get("rubric_synthesis_rules") or {})
     opinions: List[JudicialOpinion] = []
     for dim in dimensions:
         evidence_list = _collect_evidence_for_dimension(state, dim)
@@ -167,6 +186,7 @@ def defense_node(state: Dict[str, Any]) -> Dict[str, Any]:
             dim,
             context,
             DEFENSE_SYSTEM,
+            judicial_logic=judicial_logic,
         )
         opinions.append(opinion)
     return {"opinions": opinions}
@@ -175,6 +195,7 @@ def defense_node(state: Dict[str, Any]) -> Dict[str, Any]:
 def tech_lead_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Tech Lead: one JudicialOpinion per rubric dimension. Returns {"opinions": [...]}."""
     dimensions: List[Dict[str, Any]] = state.get("rubric_dimensions") or []
+    judicial_logic = _format_judicial_logic(state.get("rubric_synthesis_rules") or {})
     opinions: List[JudicialOpinion] = []
     for dim in dimensions:
         evidence_list = _collect_evidence_for_dimension(state, dim)
@@ -184,6 +205,7 @@ def tech_lead_node(state: Dict[str, Any]) -> Dict[str, Any]:
             dim,
             context,
             TECH_LEAD_SYSTEM,
+            judicial_logic=judicial_logic,
         )
         opinions.append(opinion)
     return {"opinions": opinions}

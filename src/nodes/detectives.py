@@ -53,13 +53,17 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 content = "\n".join(lines)
                 if len(commits) > 20:
                     content += "\n..."
+                fi = (dim.get("forensic_instruction") or "")[:280]
+                rationale = f"Found {len(commits)} commits. Success pattern: >3 with progression."
+                if fi:
+                    rationale = f"Forensic instruction: {fi}... {rationale}"
                 evidences.append(
                     Evidence(
                         goal=dim.get("name", "Git Forensic Analysis"),
                         found=found,
                         content=content or None,
                         location=str(path),
-                        rationale=f"Found {len(commits)} commits. Success pattern: >3 with progression.",
+                        rationale=rationale,
                         confidence=0.9 if found else 0.3,
                     )
                 )
@@ -78,13 +82,17 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             dim = next((d for d in repo_dims if d.get("id") == "state_management_rigor"), None)
             if dim:
+                fi = (dim.get("forensic_instruction") or "")[:280]
+                rationale = f"AST: BaseModel={state_struct.has_base_model}, TypedDict={state_struct.has_typed_dict}, Evidence={state_struct.has_evidence_class}, JudicialOpinion={state_struct.has_judicial_opinion_class}, operator.add={state_struct.has_operator_add}, operator.ior={state_struct.has_operator_ior}"
+                if fi:
+                    rationale = f"Forensic instruction: {fi}... {rationale}"
                 evidences.append(
                     Evidence(
                         goal=dim.get("name", "State Management Rigor"),
                         found=rigor_ok,
                         content=state_struct.snippet if has_state else None,
                         location="src/state.py",
-                        rationale=f"AST: BaseModel={state_struct.has_base_model}, TypedDict={state_struct.has_typed_dict}, Evidence={state_struct.has_evidence_class}, JudicialOpinion={state_struct.has_judicial_opinion_class}, operator.add={state_struct.has_operator_add}, operator.ior={state_struct.has_operator_ior}",
+                        rationale=rationale,
                         confidence=0.95 if rigor_ok else (0.4 if has_state else 0.0),
                     )
                 )
@@ -108,13 +116,17 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 found = graph_struct.has_state_graph and (
                     graph_struct.add_edge_calls >= 2 or graph_struct.add_conditional_edges_calls >= 1
                 )
+                fi = (dim.get("forensic_instruction") or "")[:280]
+                rationale = f"StateGraph={graph_struct.has_state_graph}, add_edge={graph_struct.add_edge_calls}, add_conditional_edges={graph_struct.add_conditional_edges_calls}, nodes={graph_struct.node_names}"
+                if fi:
+                    rationale = f"Forensic instruction: {fi}... {rationale}"
                 evidences.append(
                     Evidence(
                         goal=dim.get("name", "Graph Orchestration"),
                         found=found,
                         content=graph_struct.snippet[:2000] if graph_struct.snippet else None,
                         location="src/graph.py",
-                        rationale=f"StateGraph={graph_struct.has_state_graph}, add_edge={graph_struct.add_edge_calls}, add_conditional_edges={graph_struct.add_conditional_edges_calls}, nodes={graph_struct.node_names}",
+                        rationale=rationale,
                         confidence=0.8 if found else 0.2,
                     )
                 )
@@ -130,13 +142,17 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 has_tempfile = "tempfile" in rt or "TemporaryDirectory" in rt
                 has_subprocess = "subprocess" in rt and "os.system" not in rt
                 found = has_tempfile and has_subprocess
+                fi = (dim.get("forensic_instruction") or "")[:280]
+                rationale = f"tempfile/TemporaryDirectory={has_tempfile}, subprocess without os.system={has_subprocess}"
+                if fi:
+                    rationale = f"Forensic instruction: {fi}... {rationale}"
                 evidences.append(
                     Evidence(
                         goal=dim.get("name", "Safe Tool Engineering"),
                         found=found,
                         content=rt[:1500] if found else None,
                         location="src/tools/repo_tools.py",
-                        rationale=f"tempfile/TemporaryDirectory={has_tempfile}, subprocess without os.system={has_subprocess}",
+                        rationale=rationale,
                         confidence=0.85 if found else 0.2,
                     )
                 )
@@ -150,24 +166,32 @@ def repo_investigator_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     has_structured = (
                         "with_structured_output" in jc or "bind_tools" in jc
                     ) and "JudicialOpinion" in jc
+                    fi = (dim.get("forensic_instruction") or "")[:280]
+                    rationale = f"with_structured_output/bind_tools and JudicialOpinion present: {has_structured}"
+                    if fi:
+                        rationale = f"Forensic instruction: {fi}... {rationale}"
                     evidences.append(
                         Evidence(
                             goal=dim.get("name", "Structured Output Enforcement"),
                             found=has_structured,
                             content=jc[:1500] if has_structured else jc[:800],
                             location="src/nodes/judges.py",
-                            rationale=f"with_structured_output/bind_tools and JudicialOpinion present: {has_structured}",
+                            rationale=rationale,
                             confidence=0.85 if has_structured else 0.3,
                         )
                     )
                 else:
+                    fi = (dim.get("forensic_instruction") or "")[:200]
+                    rationale = "File not present (interim; judges not required yet)."
+                    if fi:
+                        rationale = f"Forensic instruction: {fi}... {rationale}"
                     evidences.append(
                         Evidence(
                             goal=dim.get("name", "Structured Output Enforcement"),
                             found=False,
                             content=None,
                             location="src/nodes/judges.py",
-                            rationale="File not present (interim; judges not required yet).",
+                            rationale=rationale,
                             confidence=0.0,
                         )
                     )
@@ -287,6 +311,9 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if dim:
         found = bool(snippet)
         rationale = "Searched for orchestration and metacognition terms in report."
+        fi = (dim.get("forensic_instruction") or "")[:300]
+        if fi:
+            rationale = f"Forensic instruction: {fi}... {rationale}"
         content = snippet or None
         confidence = 0.7 if found else 0.2
         # Optional: use LLM for factual classification (substantive vs keyword-only)
@@ -314,13 +341,17 @@ def doc_analyst_node(state: Dict[str, Any]) -> Dict[str, Any]:
     dim = next((d for d in pdf_dims if d.get("id") == "report_accuracy"), None)
     if dim:
         paths_content = "Paths mentioned in report:\n" + "\n".join(paths_mentioned) if paths_mentioned else "No paths extracted."
+        fi = (dim.get("forensic_instruction") or "")[:300]
+        rationale = f"Extracted {len(paths_mentioned)} path(s) from report; cross-reference in EvidenceAggregator."
+        if fi:
+            rationale = f"Forensic instruction: {fi}... {rationale}"
         evidences.append(
             Evidence(
                 goal=dim.get("name", "Report Accuracy"),
                 found=True,
                 content=paths_content + "\n\n" + (snippet[:1500] if snippet else ""),
                 location=pdf_path,
-                rationale=f"Extracted {len(paths_mentioned)} path(s) from report; cross-reference in EvidenceAggregator.",
+                rationale=rationale,
                 confidence=0.6,
             )
         )
@@ -436,11 +467,15 @@ def vision_inspector_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         return {"evidences": {"vision_inspector": evidences}}
 
+    # Send forensic_instruction to VisionInspector so it evaluates against the rubric
+    forensic_instruction = (dim.get("forensic_instruction") or "").strip() if dim else ""
     prompt = (
         "Classify this diagram: Is it an accurate LangGraph State Machine diagram, a sequence diagram, or generic flowchart? "
         "Does it show parallel split: Detectives in parallel -> Evidence Aggregation -> Judges in parallel -> Chief Justice? "
         "Reply in one short paragraph: type (StateGraph / sequence / generic), then whether parallel flow is shown (yes/no)."
     )
+    if forensic_instruction:
+        prompt = f"Rubric forensic instruction for this dimension:\n{forensic_instruction}\n\nYour task: {prompt}"
     img = images[0]
     img_bytes = img.get("bytes") or b""
     fmt = (img.get("format") or "png").lower()

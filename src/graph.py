@@ -46,14 +46,22 @@ def _load_rubric_full(rubric_path: str | Path | None = None) -> Dict[str, Any]:
     }
 
 
-def _entry_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure rubric_dimensions (and synthesis_rules) are set from default rubric.json if not provided."""
+def _context_builder_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Context Builder: load rubric via json and distribute into agent context.
+    Iterates through the dimensions array and places them (and synthesis_rules)
+    into state so detectives receive dimensions filtered by target_artifact
+    and Chief Justice receives synthesis_rules. Allows updating the
+    "Constitution" centrally via rubric.json without redeploying agent code.
+    """
     if state.get("rubric_dimensions"):
         return {}
     full = _load_rubric_full(None)
+    dimensions = full.get("dimensions", [])
+    synthesis_rules = full.get("synthesis_rules", {})
     return {
-        "rubric_dimensions": full["dimensions"],
-        "rubric_synthesis_rules": full["synthesis_rules"],
+        "rubric_dimensions": dimensions,
+        "rubric_synthesis_rules": synthesis_rules,
     }
 
 
@@ -103,7 +111,7 @@ def build_detective_graph():
     """
     Build the full graph: detectives (fan-out/fan-in) -> judges (fan-out/fan-in) -> chief_justice -> END.
 
-    - Entry -> [repo_gate, doc_gate, vision_gate] (fan-out)
+    - Context Builder -> [repo_gate, doc_gate, vision_gate] (fan-out)
     - repo_gate: conditional -> RepoInvestigator or skip_repo
     - doc_gate: conditional -> DocAnalyst or skip_doc
     - vision_gate: conditional -> VisionInspector or skip_vision
@@ -114,7 +122,7 @@ def build_detective_graph():
     """
     builder = StateGraph(AgentState)
 
-    builder.add_node("entry", _entry_node)
+    builder.add_node("context_builder", _context_builder_node)
     builder.add_node("repo_gate", lambda s: {})
     builder.add_node("doc_gate", lambda s: {})
     builder.add_node("vision_gate", lambda s: {})
@@ -130,11 +138,11 @@ def build_detective_graph():
     builder.add_node("tech_lead", tech_lead_node)
     builder.add_node("chief_justice", chief_justice_node)
 
-    builder.set_entry_point("entry")
+    builder.set_entry_point("context_builder")
 
-    builder.add_edge("entry", "repo_gate")
-    builder.add_edge("entry", "doc_gate")
-    builder.add_edge("entry", "vision_gate")
+    builder.add_edge("context_builder", "repo_gate")
+    builder.add_edge("context_builder", "doc_gate")
+    builder.add_edge("context_builder", "vision_gate")
 
     builder.add_conditional_edges("repo_gate", _route_repo, {"run": "repo_investigator", "skip": "skip_repo"})
     builder.add_conditional_edges("doc_gate", _route_doc, {"run": "doc_analyst", "skip": "skip_doc"})
